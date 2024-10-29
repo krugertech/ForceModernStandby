@@ -9,6 +9,7 @@ class Program
     {
         try
         {
+            FlightModeState newState = FlightModeState.Unknown;
             using (RadioManager radioManager = new RadioManager())
             {
                 // Get the current flight mode state
@@ -16,13 +17,17 @@ class Program
                 Console.WriteLine($"Old flight-mode state was: {(currentState == FlightModeState.Enabled ? "on" : "off")}");
 
                 // Toggle the flight mode state
-                FlightModeState newState = currentState == FlightModeState.Enabled ? FlightModeState.Disabled : FlightModeState.Enabled;
+                newState = currentState == FlightModeState.Enabled ? FlightModeState.Disabled : FlightModeState.Enabled;
                 radioManager.SetFlightModeState(newState);
                 Console.WriteLine($"Flight mode has been turned {(newState == FlightModeState.Enabled ? "on" : "off")}.");
-
-                if (newState == FlightModeState.Enabled)
-                    SleepManager.ModernStandbySleepWorkaround();
             }
+
+            if (newState == FlightModeState.Enabled)
+                SleepManager.ModernStandbySleepWorkaround();
+
+            // TODO: Detect modern standby resuming turn off flight mode for convenience.
+            // Solution: https://stackoverflow.com/questions/70272575/how-can-i-catch-an-event-when-the-computer-resume-from-sleep-hibernate-mode
+
         }
         catch (RadioManagerException ex)
         {
@@ -41,21 +46,4 @@ class Program
             Debug.WriteLine($"Exception: {ex.Message}");
         }
     }
-
-    //public static void InitiateModernStandby()
-    //{
-    //    bool result = NativeMethods.SetSuspendState(false, true, true);
-    //    if (!result)
-    //    {
-    //        // Retrieve the error code if the call fails
-    //        int error = Marshal.GetLastWin32Error();
-    //        throw new InvalidOperationException($"SetSuspendState failed with error code {error}.");
-    //    }
-    //}
-
-    //internal static class NativeMethods
-    //{
-    //    [DllImport("powrprof.dll", SetLastError = true)]
-    //    public static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
-    //}
 }

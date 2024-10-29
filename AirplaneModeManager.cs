@@ -10,6 +10,7 @@ namespace StandbyMe
     /// </summary>
     public enum FlightModeState
     {
+        Unknown = -1,
         Enabled = 0,
         Disabled = 1
     }
