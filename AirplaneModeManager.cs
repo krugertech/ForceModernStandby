@@ -1,16 +1,51 @@
 ﻿using System;
+using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 
-namespace AirplaneModeManager
+namespace StandbyMe
 {
     /// <summary>
-    /// Represents the reason for radio state changes.
-    /// Adjust the structure based on actual implementation details if needed.
+    /// Represents the state of the flight mode.
     /// </summary>
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RADIO_CHANGE_REASON
+    public enum FlightModeState
     {
-        public uint Reason;
+        Enabled = 0,
+        Disabled = 1
+    }
+
+    /// <summary>
+    /// Represents the reasons for radio state changes.
+    /// Extend this enum based on actual reasons if known.
+    /// </summary>
+    [Flags]
+    public enum RadioChangeReason : uint
+    {
+        Unknown = 0,
+        UserInitiated = 1,
+        SystemUpdate = 2,
+        // Add other reasons as per API documentation
+    }
+
+    /// <summary>
+    /// Represents specific errors related to RadioManager operations.
+    /// </summary>
+    public class RadioManagerException : Exception
+    {
+        /// <summary>
+        /// Gets the HRESULT error code.
+        /// </summary>
+        public int HResultCode { get; }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="RadioManagerException"/> class with a specified error message and HRESULT.
+        /// </summary>
+        /// <param name="message">The error message.</param>
+        /// <param name="hresult">The HRESULT error code.</param>
+        public RadioManagerException(string message, int hresult) : base(message)
+        {
+            HResultCode = hresult;
+        }
     }
 
     /// <summary>
@@ -40,7 +75,7 @@ namespace AirplaneModeManager
         int GetUIRadioInstances(out IUIRadioInstanceCollection param1);
 
         // HRESULT GetSystemRadioState(int* pbEnabled, int* param_2, _RADIO_CHANGE_REASON* param_3);
-        int GetSystemRadioState(out int pbEnabled, out int param2, out RADIO_CHANGE_REASON param3);
+        int GetSystemRadioState(out int pbEnabled, out int param2, out RadioChangeReason param3);
 
         // HRESULT SetSystemRadioState(int bEnabled);
         int SetSystemRadioState(int bEnabled);
@@ -55,7 +90,7 @@ namespace AirplaneModeManager
     /// <summary>
     /// Manages the system's Airplane (Flight) mode using COM interop.
     /// </summary>
-    public class RadioManager : IDisposable
+    public sealed class RadioManager : IDisposable
     {
         // Define GUIDs
         private static readonly Guid CLSID_RadioManagementAPI = new Guid("581333F6-28DB-41BE-BC7A-FF201F12F3F6");
@@ -63,67 +98,95 @@ namespace AirplaneModeManager
 
         private IRadioManager _radioManager;
         private bool _disposed = false;
+        private readonly object _lock = new object();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RadioManager"/> class.
         /// </summary>
         public RadioManager()
         {
+            Log("Initializing RadioManager.");
+
             // Create an instance of the RadioManager COM object
             Type radioManagerType = Type.GetTypeFromCLSID(CLSID_RadioManagementAPI);
             if (radioManagerType == null)
             {
-                throw new COMException("Failed to get the Type from CLSID_RadioManagementAPI.");
+                Log("Failed to get Type from CLSID_RadioManagementAPI.");
+                throw new RadioManagerException("Failed to get the Type from CLSID_RadioManagementAPI.", unchecked((int)0x80004005)); // E_FAIL
             }
 
             object obj = Activator.CreateInstance(radioManagerType);
             if (obj == null)
             {
-                throw new COMException("Failed to create an instance of RadioManager.");
+                Log("Failed to create an instance of RadioManager.");
+                throw new RadioManagerException("Failed to create an instance of RadioManager.", unchecked((int)0x80004005)); // E_FAIL
             }
 
             _radioManager = obj as IRadioManager;
             if (_radioManager == null)
             {
                 Marshal.ReleaseComObject(obj);
-                throw new COMException("The created object does not implement IRadioManager.");
+                Log("The created object does not implement IRadioManager.");
+                throw new RadioManagerException("The created object does not implement IRadioManager.", unchecked((int)0x80004002)); // E_NOINTERFACE
             }
+
+            Log("RadioManager initialized successfully.");
         }
 
         /// <summary>
         /// Gets the current state of the flight mode.
         /// </summary>
-        /// <returns>True if flight mode is enabled; otherwise, false.</returns>
-        public bool GetFlightModeState()
+        /// <returns><see cref="FlightModeState.Enabled"/> if flight mode is enabled; otherwise, <see cref="FlightModeState.Disabled"/>.</returns>
+        /// <exception cref="RadioManagerException">Thrown when the COM call fails.</exception>
+        public FlightModeState GetFlightModeState()
         {
-            int hr = _radioManager.GetSystemRadioState(out int bEnabled, out int param2, out RADIO_CHANGE_REASON changeReason);
-            if (hr < 0)
+            lock (_lock)
             {
-                throw new COMException($"GetSystemRadioState failed with HRESULT: 0x{hr:X}", hr);
-            }
+                EnsureNotDisposed();
+                Log("Calling GetSystemRadioState.");
 
-            // Assuming bEnabled == 0 means flight mode is on
-            return bEnabled == 0;
+                int hr = _radioManager.GetSystemRadioState(out int bEnabled, out int param2, out RadioChangeReason changeReason);
+                if (hr < 0)
+                {
+                    Log($"GetSystemRadioState failed with HRESULT: 0x{hr:X}");
+                    throw new RadioManagerException($"GetSystemRadioState failed with HRESULT: 0x{hr:X}", hr);
+                }
+
+                Log($"GetSystemRadioState succeeded. bEnabled: {bEnabled}, ChangeReason: {changeReason}");
+                return (FlightModeState)bEnabled;
+            }
         }
 
         /// <summary>
         /// Sets the flight mode state.
         /// </summary>
-        /// <param name="enable">True to enable flight mode; false to disable.</param>
-        public void SetFlightModeState(bool enable)
+        /// <param name="state">The desired flight mode state.</param>
+        /// <exception cref="RadioManagerException">Thrown when the COM call fails.</exception>
+        public void SetFlightModeState(FlightModeState state)
         {
-            int newState = enable ? 0 : 1; // Assuming 0 = enabled, 1 = disabled
-            int hr = _radioManager.SetSystemRadioState(newState);
-            if (hr < 0)
+            lock (_lock)
             {
-                throw new COMException($"SetSystemRadioState failed with HRESULT: 0x{hr:X}", hr);
-            }
+                EnsureNotDisposed();
+                Log($"Setting flight mode state to: {state}.");
 
-            // Optionally, refresh the radio state
-            hr = _radioManager.Refresh();
-            if (hr < 0)
-            {
-                throw new COMException($"Refresh failed with HRESULT: 0x{hr:X}", hr);
+                int newState = (int)state;
+                int hr = _radioManager.SetSystemRadioState(newState);
+                if (hr < 0)
+                {
+                    Log($"SetSystemRadioState failed with HRESULT: 0x{hr:X}");
+                    throw new RadioManagerException($"SetSystemRadioState failed with HRESULT: 0x{hr:X}", hr);
+                }
+
+                Log("SetSystemRadioState succeeded. Refreshing state.");
+                // Optionally, refresh the radio state
+                hr = _radioManager.Refresh();
+                if (hr < 0)
+                {
+                    Log($"Refresh failed with HRESULT: 0x{hr:X}");
+                    throw new RadioManagerException($"Refresh failed with HRESULT: 0x{hr:X}", hr);
+                }
+
+                Log("Refresh succeeded.");
             }
         }
 
@@ -132,16 +195,8 @@ namespace AirplaneModeManager
         /// </summary>
         public void Dispose()
         {
-            if (!_disposed)
-            {
-                if (_radioManager != null)
-                {
-                    Marshal.ReleaseComObject(_radioManager);
-                    _radioManager = null;
-                }
-                _disposed = true;
-                GC.SuppressFinalize(this);
-            }
+            Dispose(true);
+            GC.SuppressFinalize(this);
         }
 
         /// <summary>
@@ -149,7 +204,52 @@ namespace AirplaneModeManager
         /// </summary>
         ~RadioManager()
         {
-            Dispose();
+            Dispose(false);
+        }
+
+        /// <summary>
+        /// Releases the COM object and other resources.
+        /// </summary>
+        /// <param name="disposing">Indicates whether the method is called from Dispose.</param>
+        private void Dispose(bool disposing)
+        {
+            lock (_lock)
+            {
+                if (!_disposed)
+                {
+                    if (_radioManager != null)
+                    {
+                        Log("Releasing COM object.");
+                        Marshal.ReleaseComObject(_radioManager);
+                        _radioManager = null;
+                        Log("COM object released.");
+                    }
+                    _disposed = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Ensures that the object has not been disposed.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">Thrown when the object has been disposed.</exception>
+        private void EnsureNotDisposed()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(RadioManager));
+            }
+        }
+
+        /// <summary>
+        /// Logs a message for diagnostics.
+        /// </summary>
+        /// <param name="message">The message to log.</param>
+        private void Log(string message)
+        {
+            // Example using Debug. Replace with a logging framework as needed.
+            Debug.WriteLine($"[{DateTime.Now}] [RadioManager] {message}");
+            // TODO: integrate with a logging framework like NLog or Serilog.
         }
     }
 }
