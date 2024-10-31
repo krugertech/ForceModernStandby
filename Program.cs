@@ -1,4 +1,4 @@
-﻿using StandbyMe;
+﻿using ForceModernStandby;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
@@ -23,7 +23,7 @@ class Program
             }
 
             if (newState == FlightModeState.Enabled)
-                SleepManager.ModernStandbySleepWorkaround();
+             SleepManager.ModernStandbySleepWorkaround();
 
             // TODO: Detect modern standby resuming turn off flight mode for convenience.
             // Solution: https://stackoverflow.com/questions/70272575/how-can-i-catch-an-event-when-the-computer-resume-from-sleep-hibernate-mode

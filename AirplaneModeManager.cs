@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 
-namespace StandbyMe
+namespace ForceModernStandby
 {
     /// <summary>
     /// Represents the state of the flight mode.

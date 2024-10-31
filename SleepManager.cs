@@ -2,7 +2,7 @@
 using System.Runtime.InteropServices;
 using System.Diagnostics;
 
-namespace StandbyMe
+namespace ForceModernStandby
 {
     /// <summary>
     /// Provides methods to control the computer's sleep state.
