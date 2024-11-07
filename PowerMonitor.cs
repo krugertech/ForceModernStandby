@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace PowerNotificationMonitor
 {
@@ -50,10 +51,12 @@ namespace PowerNotificationMonitor
 
         [DllImport("User32.dll", CharSet = CharSet.Auto)]
         private static extern bool UnregisterPowerSettingNotification(IntPtr Handle);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
         #endregion
 
         #region Win32 Structures and Delegates
-        // Add the missing delegate declaration
         private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         [StructLayout(LayoutKind.Sequential)]
@@ -96,6 +99,7 @@ namespace PowerNotificationMonitor
         {
             public Guid PowerSetting;
             public uint DataLength;
+            // Variable-length data follows
         }
         #endregion
 
@@ -106,20 +110,26 @@ namespace PowerNotificationMonitor
 
         private static Guid GUID_MONITOR_POWER_ON = new Guid("02731015-4510-4526-99E6-E5A17EBD1AEA");
         private static Guid GUID_CONSOLE_DISPLAY_STATE = new Guid("6FE69556-704A-47A0-8F24-C28D936FDA47");
+        private const int WM_QUIT = 0x0012;
         #endregion
 
-        private readonly IntPtr _hWnd;
-        private readonly IntPtr _hPowerNotify1;
-        private readonly IntPtr _hPowerNotify2;
-        private readonly ushort _classAtom;
-        private readonly WNDCLASS _wndClass;
-        private readonly WndProcDelegate _wndProcDelegate;
+        #region Private Fields
+        private Thread _messageThread;
+        private IntPtr _hWnd;
+        private IntPtr _hPowerNotify1;
+        private IntPtr _hPowerNotify2;
+        private ushort _classAtom;
+        private WNDCLASS _wndClass;
+        private WndProcDelegate _wndProcDelegate;
         private bool _isDisposed;
+        private readonly ManualResetEvent _threadStarted = new ManualResetEvent(false);
+        #endregion
 
-        // Events
+        #region Events
         public event EventHandler<PowerStateChangedEventArgs> MonitorPowerChanged;
         public event EventHandler<PowerStateChangedEventArgs> ConsoleDisplayStateChanged;
         public event EventHandler<PowerSettingChangedEventArgs> OtherPowerSettingChanged;
+        #endregion
 
         public PowerMonitor()
         {
@@ -135,26 +145,56 @@ namespace PowerNotificationMonitor
             if (_classAtom == 0)
                 throw new InvalidOperationException("Failed to register window class");
 
-            _hWnd = CreateWindowEx(0, _wndClass.lpszClassName, "Power Notification Window", 0, 0, 0, 0, 0, (IntPtr)(-3), IntPtr.Zero, _wndClass.hInstance, IntPtr.Zero);
-            if (_hWnd == IntPtr.Zero)
-                throw new InvalidOperationException("Failed to create window");
+            // Start the message loop on a dedicated thread
+            _messageThread = new Thread(MessageLoop)
+            {
+                IsBackground = true,
+                Name = "PowerMonitorMessageLoopThread"
+            };
+            _messageThread.SetApartmentState(ApartmentState.STA);
+            _messageThread.Start();
 
-            _hPowerNotify1 = RegisterPowerSettingNotification(_hWnd, ref GUID_MONITOR_POWER_ON, DEVICE_NOTIFY_WINDOW_HANDLE);
-            if (_hPowerNotify1 == IntPtr.Zero)
-                throw new InvalidOperationException("Failed to register power setting notification for monitor power");
-
-            _hPowerNotify2 = RegisterPowerSettingNotification(_hWnd, ref GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
-            if (_hPowerNotify2 == IntPtr.Zero)
-                throw new InvalidOperationException("Failed to register power setting notification for console display state");
+            // Wait until the thread has initialized
+            _threadStarted.WaitOne();
         }
 
-        public void StartMonitoring()
+        private void MessageLoop()
         {
-            MSG msg;
-            while (GetMessage(out msg, IntPtr.Zero, 0, 0))
+            try
             {
-                TranslateMessage(ref msg);
-                DispatchMessage(ref msg);
+                // Create message-only window
+                _hWnd = CreateWindowEx(0, _wndClass.lpszClassName, "Power Notification Window", 0, 0, 0, 0, 0, (IntPtr)(-3), IntPtr.Zero, _wndClass.hInstance, IntPtr.Zero);
+                if (_hWnd == IntPtr.Zero)
+                    throw new InvalidOperationException("Failed to create window");
+
+                // Register for power setting notifications
+                _hPowerNotify1 = RegisterPowerSettingNotification(_hWnd, ref GUID_MONITOR_POWER_ON, DEVICE_NOTIFY_WINDOW_HANDLE);
+                if (_hPowerNotify1 == IntPtr.Zero)
+                    throw new InvalidOperationException("Failed to register power setting notification for monitor power");
+
+                _hPowerNotify2 = RegisterPowerSettingNotification(_hWnd, ref GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
+                if (_hPowerNotify2 == IntPtr.Zero)
+                    throw new InvalidOperationException("Failed to register power setting notification for console display state");
+
+                // Signal that the thread has started successfully
+                _threadStarted.Set();
+
+                // Message loop
+                MSG msg;
+                while (GetMessage(out msg, IntPtr.Zero, 0, 0))
+                {
+                    TranslateMessage(ref msg);
+                    DispatchMessage(ref msg);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"PowerMonitor MessageLoop Exception: {ex.Message}");
+                // Optionally, handle logging or rethrow
+            }
+            finally
+            {
+                Cleanup();
             }
         }
 
@@ -162,25 +202,67 @@ namespace PowerNotificationMonitor
         {
             if (msg == WM_POWERBROADCAST && (int)wParam == PBT_POWERSETTINGCHANGE)
             {
-                POWERBROADCAST_SETTING powerSetting = (POWERBROADCAST_SETTING)Marshal.PtrToStructure(lParam, typeof(POWERBROADCAST_SETTING));
-                int dataOffset = Marshal.OffsetOf(typeof(POWERBROADCAST_SETTING), "DataLength").ToInt32() + Marshal.SizeOf(typeof(uint));
-                IntPtr pData = (IntPtr)((long)lParam + dataOffset);
-                int data = Marshal.ReadInt32(pData);
+                try
+                {
+                    POWERBROADCAST_SETTING powerSetting = Marshal.PtrToStructure<POWERBROADCAST_SETTING>(lParam);
+                    int dataOffset = Marshal.OffsetOf<POWERBROADCAST_SETTING>("DataLength").ToInt32() + Marshal.SizeOf<uint>();
+                    IntPtr pData = IntPtr.Add(lParam, dataOffset);
+                    int data = Marshal.ReadInt32(pData);
 
-                if (powerSetting.PowerSetting == GUID_MONITOR_POWER_ON)
-                {
-                    MonitorPowerChanged?.Invoke(this, new PowerStateChangedEventArgs(data));
+                    if (powerSetting.PowerSetting == GUID_MONITOR_POWER_ON)
+                    {
+                        MonitorPowerChanged?.Invoke(this, new PowerStateChangedEventArgs(data));
+                    }
+                    else if (powerSetting.PowerSetting == GUID_CONSOLE_DISPLAY_STATE)
+                    {
+                        ConsoleDisplayStateChanged?.Invoke(this, new PowerStateChangedEventArgs(data));
+                    }
+                    else
+                    {
+                        OtherPowerSettingChanged?.Invoke(this, new PowerSettingChangedEventArgs(powerSetting.PowerSetting, data));
+                    }
                 }
-                else if (powerSetting.PowerSetting == GUID_CONSOLE_DISPLAY_STATE)
+                catch (Exception ex)
                 {
-                    ConsoleDisplayStateChanged?.Invoke(this, new PowerStateChangedEventArgs(data));
-                }
-                else
-                {
-                    OtherPowerSettingChanged?.Invoke(this, new PowerSettingChangedEventArgs(powerSetting.PowerSetting, data));
+                    Console.WriteLine($"WndProc Exception: {ex.Message}");
+                    // Optionally, handle logging
                 }
             }
             return DefWindowProc(hWnd, msg, wParam, lParam);
+        }
+
+        private void Cleanup()
+        {
+            if (_hPowerNotify1 != IntPtr.Zero)
+            {
+                UnregisterPowerSettingNotification(_hPowerNotify1);
+                _hPowerNotify1 = IntPtr.Zero;
+            }
+
+            if (_hPowerNotify2 != IntPtr.Zero)
+            {
+                UnregisterPowerSettingNotification(_hPowerNotify2);
+                _hPowerNotify2 = IntPtr.Zero;
+            }
+
+            if (_hWnd != IntPtr.Zero)
+            {
+                DestroyWindow(_hWnd);
+                _hWnd = IntPtr.Zero;
+            }
+
+            if (_classAtom != 0)
+            {
+                UnregisterClass((IntPtr)_classAtom, _wndClass.hInstance);
+                _classAtom = 0;
+            }
+        }
+
+        public void StartMonitoring()
+        {
+            // The monitoring starts automatically upon instantiation and thread start.
+            // This method can be used to ensure the monitoring has started, or to perform additional setup if needed.
+            // Currently, it's a placeholder and does not perform any actions.
         }
 
         public void Dispose()
@@ -195,18 +277,18 @@ namespace PowerNotificationMonitor
             {
                 if (disposing)
                 {
-                    // Dispose managed resources
+                    // Signal the message loop to exit
+                    if (_hWnd != IntPtr.Zero)
+                    {
+                        PostMessage(_hWnd, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+                    }
                 }
 
-                // Dispose unmanaged resources
-                if (_hPowerNotify1 != IntPtr.Zero)
-                    UnregisterPowerSettingNotification(_hPowerNotify1);
-                if (_hPowerNotify2 != IntPtr.Zero)
-                    UnregisterPowerSettingNotification(_hPowerNotify2);
-                if (_hWnd != IntPtr.Zero)
-                    DestroyWindow(_hWnd);
-                if (_classAtom != 0)
-                    UnregisterClass((IntPtr)_classAtom, _wndClass.hInstance);
+                // Wait for the thread to finish
+                if (_messageThread != null && _messageThread.IsAlive)
+                {
+                    _messageThread.Join(2000); // Wait for 2 seconds
+                }
 
                 _isDisposed = true;
             }
@@ -239,6 +321,4 @@ namespace PowerNotificationMonitor
             Data = data;
         }
     }
-
-
 }
