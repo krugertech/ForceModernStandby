@@ -7,6 +7,20 @@
     <Nullable>enable</Nullable>
     <ApplicationIcon>icon6.ico</ApplicationIcon>
     <PackageIcon></PackageIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="8.0.0" />
+    <!--<PackageReference Include="Vanara.Core" Version="4.0.4" />
+    <PackageReference Include="Vanara.PInvoke.Cryptography" Version="4.0.4" />
+    <PackageReference Include="Vanara.PInvoke.Gdi32" Version="4.0.4" />
+    <PackageReference Include="Vanara.PInvoke.Kernel32" Version="4.0.4" />
+    <PackageReference Include="Vanara.PInvoke.PowrProf" Version="4.0.4" />
+    <PackageReference Include="Vanara.PInvoke.Security" Version="4.0.4" />
+    <PackageReference Include="Vanara.PInvoke.Shared" Version="4.0.4" />
+    <PackageReference Include="Vanara.PInvoke.Shell32" Version="4.0.4" />
+    <PackageReference Include="Vanara.PInvoke.User32" Version="4.0.4" />-->
+  </ItemGroup>
 
 </Project>
